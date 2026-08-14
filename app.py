@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime
 
@@ -16,26 +17,33 @@ MODELO = st.secrets.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 MAX_MENSAGENS_HISTORICO = 20  # limita o contexto enviado à API
 MAX_CARACTERES_ENTRADA = 4000
 MAX_TENTATIVAS = 3  # tentativas para erros transitórios (retry automático)
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_PADRAO = (
     "Você é um assistente virtual útil, educado e objetivo. "
     "Responda em português do Brasil, salvo pedido contrário."
 )
 
-# Verifica a chave no secrets.toml
-if "GROQ_API_KEY" in st.secrets:
+# Busca a chave primeiro no secrets.toml (uso local/Streamlit Cloud) e,
+# se não encontrar, cai para variável de ambiente (útil em outros
+# provedores de deploy, como Render, Docker, etc.)
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+
+if GROQ_API_KEY:
     cliente = openai.OpenAI(
-        api_key=st.secrets["GROQ_API_KEY"],
+        api_key=GROQ_API_KEY,
         base_url="https://api.groq.com/openai/v1",
     )
 else:
     st.error(
-        "Chave GROQ_API_KEY não encontrada no arquivo .streamlit/secrets.toml!"
+        "Chave GROQ_API_KEY não encontrada. Defina-a em "
+        ".streamlit/secrets.toml ou como variável de ambiente."
     )
     st.stop()
 
-# Inicializa o histórico
+# Inicializa o histórico e o prompt de sistema (editável)
 if "mensagens" not in st.session_state:
     st.session_state.mensagens = []
+if "system_prompt" not in st.session_state:
+    st.session_state.system_prompt = SYSTEM_PROMPT_PADRAO
 
 
 def gerar_resposta_com_retry(mensagens_api, placeholder):
@@ -53,6 +61,11 @@ def gerar_resposta_com_retry(mensagens_api, placeholder):
                 stream=True,
             )
             for chunk in stream:
+                # Alguns provedores enviam um chunk final sem "choices"
+                # (ex.: chunk apenas com estatísticas de uso); ignorá-lo
+                # evita um IndexError ao acessar choices[0].
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta.content or ""
                 resposta_completa += delta
                 placeholder.markdown(resposta_completa + "▌")
@@ -81,8 +94,6 @@ def gerar_resposta_com_retry(mensagens_api, placeholder):
             )
             time.sleep(espera)
 
-    return resposta_completa
-
 
 def montar_conversa_para_download(mensagens):
     """Monta um texto simples com a conversa para exportação."""
@@ -94,10 +105,70 @@ def montar_conversa_para_download(mensagens):
     return "\n".join(linhas)
 
 
-# Barra lateral: limpar conversa e exportar
+def montar_mensagens_para_api():
+    """Monta a lista de mensagens (com system prompt) a enviar à API,
+    truncando o histórico para não estourar o contexto."""
+    historico_recente = st.session_state.mensagens[-MAX_MENSAGENS_HISTORICO:]
+    return [{"role": "system", "content": st.session_state.system_prompt}] + [
+        {"role": m["role"], "content": m["content"]} for m in historico_recente
+    ]
+
+
+def responder(placeholder):
+    """Chama a API, trata erros e adiciona a resposta ao histórico."""
+    try:
+        resposta_completa = gerar_resposta_com_retry(
+            montar_mensagens_para_api(), placeholder
+        )
+        st.session_state.mensagens.append(
+            {"role": "assistant", "content": resposta_completa}
+        )
+    except openai.AuthenticationError:
+        st.error("Chave de API inválida ou expirada. Verifique o GROQ_API_KEY.")
+    except openai.RateLimitError:
+        st.error(
+            f"Limite de requisições atingido mesmo após {MAX_TENTATIVAS} tentativas. "
+            "Aguarde um pouco e tente novamente."
+        )
+    except openai.APIConnectionError:
+        st.error(
+            f"Não foi possível conectar à API da Groq após {MAX_TENTATIVAS} tentativas. "
+            "Verifique sua conexão com a internet."
+        )
+    except openai.APIStatusError as e:
+        st.error(f"A API da Groq retornou um erro (status {e.status_code}). Tente novamente.")
+    except Exception as e:
+        st.error(f"Ocorreu um erro inesperado: {e}")
+
+
+# Barra lateral: prompt de sistema, limpar conversa, regenerar e exportar
 with st.sidebar:
+    st.subheader("⚙️ Configurações")
+    st.session_state.system_prompt = st.text_area(
+        "Prompt de sistema",
+        value=st.session_state.system_prompt,
+        height=120,
+        help=(
+            "Instrução que define o comportamento do assistente. "
+            "Clique fora do campo (ou pressione Ctrl+Enter) para confirmar a edição."
+        ),
+    )
+    with st.expander("👁️ Prompt de sistema ativo no momento"):
+        st.caption(st.session_state.system_prompt)
+
+    st.divider()
+
     if st.button("🗑️ Limpar conversa"):
         st.session_state.mensagens = []
+        st.rerun()
+
+    ultima_e_do_assistente = (
+        bool(st.session_state.mensagens)
+        and st.session_state.mensagens[-1]["role"] == "assistant"
+    )
+    if st.button("🔁 Regenerar última resposta", disabled=not ultima_e_do_assistente):
+        st.session_state.mensagens.pop()  # remove a resposta anterior
+        st.session_state.regenerar = True
         st.rerun()
 
     if st.session_state.mensagens:
@@ -113,8 +184,19 @@ for mensagem in st.session_state.mensagens:
     with st.chat_message(mensagem["role"]):
         st.markdown(mensagem["content"])
 
+# Se o usuário pediu para regenerar, gera nova resposta para a última
+# pergunta sem exigir uma nova entrada no chat_input.
+if st.session_state.get("regenerar"):
+    st.session_state.regenerar = False
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        responder(placeholder)
+    st.rerun()
+
 # Entrada de mensagem do usuário
-entrada_usuario = st.chat_input("Digite sua mensagem...")
+entrada_usuario = st.chat_input(
+    f"Digite sua mensagem... (máx. {MAX_CARACTERES_ENTRADA} caracteres)"
+)
 
 if entrada_usuario:
     caracteres_excedentes = len(entrada_usuario) - MAX_CARACTERES_ENTRADA
@@ -125,40 +207,16 @@ if entrada_usuario:
         )
     entrada_usuario = entrada_usuario.strip()[:MAX_CARACTERES_ENTRADA]
 
+    if not entrada_usuario:
+        st.warning("Mensagem vazia — digite algo antes de enviar.")
+        st.stop()
+
     st.session_state.mensagens.append(
         {"role": "user", "content": entrada_usuario}
     )
     with st.chat_message("user"):
         st.markdown(entrada_usuario)
 
-    # Trunca o histórico enviado à API (mantém as últimas N mensagens)
-    historico_recente = st.session_state.mensagens[-MAX_MENSAGENS_HISTORICO:]
-    mensagens_api = [{"role": "system", "content": SYSTEM_PROMPT}] + [
-        {"role": m["role"], "content": m["content"]} for m in historico_recente
-    ]
-
     with st.chat_message("assistant"):
         placeholder = st.empty()
-
-        try:
-            resposta_completa = gerar_resposta_com_retry(mensagens_api, placeholder)
-            st.session_state.mensagens.append(
-                {"role": "assistant", "content": resposta_completa}
-            )
-
-        except openai.AuthenticationError:
-            st.error("Chave de API inválida ou expirada. Verifique o GROQ_API_KEY.")
-        except openai.RateLimitError:
-            st.error(
-                f"Limite de requisições atingido mesmo após {MAX_TENTATIVAS} tentativas. "
-                "Aguarde um pouco e tente novamente."
-            )
-        except openai.APIConnectionError:
-            st.error(
-                f"Não foi possível conectar à API da Groq após {MAX_TENTATIVAS} tentativas. "
-                "Verifique sua conexão com a internet."
-            )
-        except openai.APIStatusError as e:
-            st.error(f"A API da Groq retornou um erro (status {e.status_code}). Tente novamente.")
-        except Exception as e:
-            st.error(f"Ocorreu um erro inesperado: {e}")
+        responder(placeholder)
