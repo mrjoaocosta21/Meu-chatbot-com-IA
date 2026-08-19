@@ -4,16 +4,21 @@ Este projeto é um chatbot com IA que responde a perguntas dos usuários em ling
 # RECURSOS
 - Conversas naturais movidas por IA;
 - Integração com o modelo Llama 3.3 (via API da Groq, compatível com OpenAI SDK);
-- Respostas em tempo real com efeito de digitação (streaming);
+- Respostas em tempo real com efeito de digitação (streaming), com indicador "Pensando..." enquanto o primeiro token não chega;
+- **Tela de boas-vindas com sugestões clicáveis** quando a conversa está vazia, para ajudar quem não sabe por onde começar;
+- **Avatares distintos** para usuário e assistente, facilitando a leitura visual da conversa;
 - Memória do histórico de conversas, com limite automático das últimas mensagens para não estourar o contexto;
-- **Prompt de sistema editável** diretamente pela barra lateral, sem precisar mexer no código;
-- Botão para limpar a conversa a qualquer momento;
+- **Prompt de sistema editável** em "Configurações avançadas" na barra lateral, com visualização do prompt ativo no momento — sem precisar mexer no código;
+- Botão para limpar a conversa, com **diálogo de confirmação** e aviso (toast) de sucesso para evitar perda acidental do histórico;
 - **Botão para regenerar** a última resposta do assistente;
 - **Exportação da conversa** em arquivo `.txt`, com data e hora;
 - **Retry automático** com backoff exponencial em falhas transitórias da API (rate limit, conexão, erros 5xx);
 - Aviso de limite de caracteres na mensagem antes do corte automático, além de bloqueio de envio de mensagens vazias;
 - Chave de API lida do `secrets.toml` ou, como alternativa, de uma **variável de ambiente** `GROQ_API_KEY` (útil para deploy em Render, Docker, etc.);
-- Interface limpa via Streamlit;
+- Interface limpa via Streamlit, com ações rápidas em destaque na barra lateral e configurações avançadas escondidas por padrão;
+- **Bolhas de chat estilizadas** (gradiente para o usuário, tom neutro para o assistente), com **horário** em cada mensagem;
+- **Botões de feedback (👍/👎)** em cada resposta do assistente;
+- **Indicador de digitação animado** ("Pensando...") enquanto a resposta é gerada;
 - Tratamento de erros específico (autenticação, limite de requisições, conexão, erros da API) e proteção contra respostas de streaming malformadas;
 - Dependências com **versões fixadas** em `requirements.txt` para builds reprodutíveis.
 
@@ -24,11 +29,11 @@ Este projeto é um chatbot com IA que responde a perguntas dos usuários em ling
 - Modelo Llama 3.3 70B (`llama-3.3-70b-versatile`)
 
 # COMO FUNCIONA
-1. O usuário digita uma mensagem;
+1. Ao abrir o chat vazio, o usuário vê sugestões de perguntas para começar (ou pode digitar a sua própria);
 2. A mensagem é adicionada ao histórico e enviada, junto com o prompt de sistema (padrão ou personalizado na barra lateral) e as últimas mensagens da conversa, para a API da Groq;
-3. A IA gera a resposta, que é exibida progressivamente na tela (streaming);
+3. A IA gera a resposta, que é exibida progressivamente na tela (streaming), com um indicador "Pensando..." enquanto aguarda o primeiro token;
 4. O histórico da conversa é armazenado na sessão do Streamlit (`session_state`);
-5. O usuário pode limpar a conversa, regenerar a última resposta ou exportar a conversa a qualquer momento pela barra lateral.
+5. O usuário pode limpar a conversa (com confirmação), regenerar a última resposta ou exportar a conversa a qualquer momento pela barra lateral.
 
 # COMO EXECUTAR O PROJETO
 1. Instale o Python 3.x;
@@ -61,4 +66,5 @@ Este projeto é um chatbot com IA que responde a perguntas dos usuários em ling
 - Dar suporte para entrada de arquivos e imagens (exigiria trocar de modelo, já que o Llama 3.3 70B via Groq é somente texto);
 - Fazer o deploy na nuvem (AWS, Render, Streamlit Community Cloud);
 - Adicionar suporte a múltiplos idiomas na interface;
-- Adicionar botões de feedback (👍/👎) nas respostas do assistente.
+- Botão de copiar resposta com um clique (exigiria um componente customizado, já que o Streamlit não tem suporte nativo a clipboard);
+- Contagem de caracteres em tempo real no campo de entrada (também exigiria um componente customizado, pois o `st.chat_input` nativo só expõe o texto no momento do envio).

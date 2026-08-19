@@ -9,6 +9,49 @@ st.set_page_config(
     page_title="Chatbot com IA", page_icon="🤖", layout="centered"
 )
 
+# --- Estilos personalizados: bolhas de chat, indicador de digitação e
+# limpeza visual (esconde o botão "Deploy", que não faz sentido para quem
+# já está usando o app) ---
+st.markdown(
+    """
+    <style>
+    [data-testid="stAppDeployButton"] { display: none; }
+
+    [data-testid="stChatMessageContent"][aria-label="Chat message from user"] {
+        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        border-radius: 18px 18px 4px 18px;
+        padding: 0.7rem 1rem;
+    }
+    [data-testid="stChatMessageContent"][aria-label="Chat message from user"] p {
+        color: #ffffff;
+        margin-bottom: 0;
+    }
+    [data-testid="stChatMessageContent"][aria-label="Chat message from assistant"] {
+        background: var(--secondary-background-color, rgba(128, 128, 128, 0.1));
+        border-radius: 18px 18px 18px 4px;
+        padding: 0.7rem 1rem;
+    }
+    .horario-mensagem {
+        font-size: 0.72rem;
+        opacity: 0.55;
+        margin-top: 0.15rem;
+    }
+    .pontos-digitando span {
+        animation: piscar 1.4s infinite both;
+        font-size: 1.3rem;
+        line-height: 1;
+    }
+    .pontos-digitando span:nth-child(2) { animation-delay: 0.2s; }
+    .pontos-digitando span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes piscar {
+        0%, 80%, 100% { opacity: 0.2; }
+        40% { opacity: 1; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("🤖 Chatbot com IA")
 st.caption("Seu assistente inteligente alimentado pelo Llama 3 (Groq)")
 
@@ -21,6 +64,14 @@ SYSTEM_PROMPT_PADRAO = (
     "Você é um assistente virtual útil, educado e objetivo. "
     "Responda em português do Brasil, salvo pedido contrário."
 )
+AVATAR_USUARIO = "🧑"
+AVATAR_ASSISTENTE = "🤖"
+SUGESTOES_INICIAIS = [
+    "Explique um conceito complexo de forma simples",
+    "Me ajude a escrever um e-mail profissional",
+    "Dê ideias criativas para um projeto",
+    "Resuma um texto que vou colar em seguida",
+]
 
 # Busca a chave primeiro no secrets.toml (uso local/Streamlit Cloud) e,
 # se não encontrar, cai para variável de ambiente (útil em outros
@@ -44,6 +95,21 @@ if "mensagens" not in st.session_state:
     st.session_state.mensagens = []
 if "system_prompt" not in st.session_state:
     st.session_state.system_prompt = SYSTEM_PROMPT_PADRAO
+if "proximo_id_mensagem" not in st.session_state:
+    st.session_state.proximo_id_mensagem = 0
+
+
+def adicionar_mensagem(role, content):
+    """Adiciona uma mensagem ao histórico com id único e horário,
+    usados para exibir o horário e o botão de feedback (👍/👎)."""
+    mensagem = {
+        "id": st.session_state.proximo_id_mensagem,
+        "role": role,
+        "content": content,
+        "hora": datetime.now().strftime("%H:%M"),
+    }
+    st.session_state.proximo_id_mensagem += 1
+    st.session_state.mensagens.append(mensagem)
 
 
 def gerar_resposta_com_retry(mensagens_api, placeholder):
@@ -67,8 +133,9 @@ def gerar_resposta_com_retry(mensagens_api, placeholder):
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta.content or ""
-                resposta_completa += delta
-                placeholder.markdown(resposta_completa + "▌")
+                if delta:
+                    resposta_completa += delta
+                    placeholder.markdown(resposta_completa + "▌")
 
             placeholder.markdown(resposta_completa)
             return resposta_completa
@@ -116,79 +183,144 @@ def montar_mensagens_para_api():
 
 def responder(placeholder):
     """Chama a API, trata erros e adiciona a resposta ao histórico."""
+    placeholder.markdown(
+        '<span class="pontos-digitando">Pensando <span>.</span><span>.</span><span>.</span></span>',
+        unsafe_allow_html=True,
+    )
     try:
         resposta_completa = gerar_resposta_com_retry(
             montar_mensagens_para_api(), placeholder
         )
-        st.session_state.mensagens.append(
-            {"role": "assistant", "content": resposta_completa}
-        )
+        adicionar_mensagem("assistant", resposta_completa)
     except openai.AuthenticationError:
+        placeholder.empty()
         st.error("Chave de API inválida ou expirada. Verifique o GROQ_API_KEY.")
     except openai.RateLimitError:
+        placeholder.empty()
         st.error(
             f"Limite de requisições atingido mesmo após {MAX_TENTATIVAS} tentativas. "
             "Aguarde um pouco e tente novamente."
         )
     except openai.APIConnectionError:
+        placeholder.empty()
         st.error(
             f"Não foi possível conectar à API da Groq após {MAX_TENTATIVAS} tentativas. "
             "Verifique sua conexão com a internet."
         )
     except openai.APIStatusError as e:
+        placeholder.empty()
         st.error(f"A API da Groq retornou um erro (status {e.status_code}). Tente novamente.")
     except Exception as e:
+        placeholder.empty()
         st.error(f"Ocorreu um erro inesperado: {e}")
 
 
-# Barra lateral: prompt de sistema, limpar conversa, regenerar e exportar
-with st.sidebar:
-    st.subheader("⚙️ Configurações")
-    st.session_state.system_prompt = st.text_area(
-        "Prompt de sistema",
-        value=st.session_state.system_prompt,
-        height=120,
-        help=(
-            "Instrução que define o comportamento do assistente. "
-            "Clique fora do campo (ou pressione Ctrl+Enter) para confirmar a edição."
-        ),
+@st.dialog("Limpar conversa?")
+def confirmar_limpeza():
+    st.write(
+        "Isso vai apagar todo o histórico da conversa atual. "
+        "Essa ação não pode ser desfeita."
     )
-    with st.expander("👁️ Prompt de sistema ativo no momento"):
-        st.caption(st.session_state.system_prompt)
+    col_cancelar, col_confirmar = st.columns(2)
+    with col_cancelar:
+        if st.button("Cancelar", use_container_width=True):
+            st.rerun()
+    with col_confirmar:
+        if st.button("Sim, limpar", type="primary", use_container_width=True):
+            st.session_state.mensagens = []
+            st.session_state.toast_pendente = "🗑️ Conversa limpa com sucesso!"
+            st.rerun()
 
-    st.divider()
 
-    if st.button("🗑️ Limpar conversa"):
-        st.session_state.mensagens = []
-        st.rerun()
+# Barra lateral: ações rápidas em destaque, configurações avançadas escondidas
+with st.sidebar:
+    st.subheader("💬 Conversa")
+
+    col_limpar, col_regenerar = st.columns(2)
+    with col_limpar:
+        if st.button("🗑️ Limpar", use_container_width=True, disabled=not st.session_state.mensagens):
+            confirmar_limpeza()
 
     ultima_e_do_assistente = (
         bool(st.session_state.mensagens)
         and st.session_state.mensagens[-1]["role"] == "assistant"
     )
-    if st.button("🔁 Regenerar última resposta", disabled=not ultima_e_do_assistente):
-        st.session_state.mensagens.pop()  # remove a resposta anterior
-        st.session_state.regenerar = True
-        st.rerun()
+    with col_regenerar:
+        if st.button("🔁 Regenerar", use_container_width=True, disabled=not ultima_e_do_assistente):
+            st.session_state.mensagens.pop()  # remove a resposta anterior
+            st.session_state.regenerar = True
+            st.rerun()
 
-    if st.session_state.mensagens:
-        st.download_button(
-            label="💾 Exportar conversa (.txt)",
-            data=montar_conversa_para_download(st.session_state.mensagens),
-            file_name=f"conversa_{datetime.now():%Y%m%d_%H%M%S}.txt",
-            mime="text/plain",
+    st.download_button(
+        label="💾 Exportar conversa (.txt)",
+        data=montar_conversa_para_download(st.session_state.mensagens),
+        file_name=f"conversa_{datetime.now():%Y%m%d_%H%M%S}.txt",
+        mime="text/plain",
+        use_container_width=True,
+        disabled=not st.session_state.mensagens,
+    )
+
+    st.divider()
+
+    with st.expander("⚙️ Configurações avançadas"):
+        st.session_state.system_prompt = st.text_area(
+            "Prompt de sistema",
+            value=st.session_state.system_prompt,
+            height=120,
+            help=(
+                "Instrução que define o comportamento do assistente. "
+                "Clique fora do campo (ou pressione Ctrl+Enter) para confirmar a edição."
+            ),
         )
+        st.caption("Prompt ativo no momento:")
+        st.caption(f"_{st.session_state.system_prompt}_")
+
+    st.caption(f"Modelo em uso: `{MODELO}`")
+
+# Mensagem que será processada nesta execução (vinda do chat_input ou de um
+# clique numa sugestão inicial) — resolvida antes de decidir o que exibir,
+# para não mostrar a tela de boas-vindas e a resposta ao mesmo tempo.
+mensagem_pendente = st.session_state.pop("mensagem_pendente", None)
+
+# Exibe um toast pendente de uma ação da execução anterior (ex.: limpar
+# conversa), já que st.toast precisa ser chamado após o st.rerun() que
+# disparou a ação para aparecer corretamente.
+toast_pendente = st.session_state.pop("toast_pendente", None)
+if toast_pendente:
+    st.toast(toast_pendente)
+
+# Tela de boas-vindas com sugestões, exibida só quando a conversa está vazia
+if not st.session_state.mensagens and not mensagem_pendente and not st.session_state.get("regenerar"):
+    st.markdown("#### 👋 Como posso ajudar você hoje?")
+    st.caption("Escolha uma sugestão abaixo ou digite sua própria pergunta.")
+    colunas = st.columns(2)
+    for indice, sugestao in enumerate(SUGESTOES_INICIAIS):
+        with colunas[indice % 2]:
+            if st.button(sugestao, use_container_width=True, key=f"sugestao_{indice}"):
+                st.session_state.mensagem_pendente = sugestao
+                st.rerun()
 
 # Exibe histórico de mensagens
 for mensagem in st.session_state.mensagens:
-    with st.chat_message(mensagem["role"]):
+    avatar = AVATAR_USUARIO if mensagem["role"] == "user" else AVATAR_ASSISTENTE
+    with st.chat_message(mensagem["role"], avatar=avatar):
         st.markdown(mensagem["content"])
+        rodape_esquerda, rodape_direita = st.columns([3, 1])
+        with rodape_esquerda:
+            if mensagem.get("hora"):
+                st.markdown(
+                    f'<div class="horario-mensagem">{mensagem["hora"]}</div>',
+                    unsafe_allow_html=True,
+                )
+        if mensagem["role"] == "assistant":
+            with rodape_direita:
+                st.feedback("thumbs", key=f"feedback_{mensagem['id']}")
 
 # Se o usuário pediu para regenerar, gera nova resposta para a última
 # pergunta sem exigir uma nova entrada no chat_input.
 if st.session_state.get("regenerar"):
     st.session_state.regenerar = False
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=AVATAR_ASSISTENTE):
         placeholder = st.empty()
         responder(placeholder)
     st.rerun()
@@ -198,25 +330,29 @@ entrada_usuario = st.chat_input(
     f"Digite sua mensagem... (máx. {MAX_CARACTERES_ENTRADA} caracteres)"
 )
 
-if entrada_usuario:
-    caracteres_excedentes = len(entrada_usuario) - MAX_CARACTERES_ENTRADA
+nova_mensagem = mensagem_pendente or entrada_usuario
+
+if nova_mensagem:
+    caracteres_excedentes = len(nova_mensagem) - MAX_CARACTERES_ENTRADA
     if caracteres_excedentes > 0:
         st.warning(
             f"Sua mensagem tem {caracteres_excedentes} caracteres a mais que o "
             f"limite ({MAX_CARACTERES_ENTRADA}). Ela será cortada."
         )
-    entrada_usuario = entrada_usuario.strip()[:MAX_CARACTERES_ENTRADA]
+    nova_mensagem = nova_mensagem.strip()[:MAX_CARACTERES_ENTRADA]
 
-    if not entrada_usuario:
+    if not nova_mensagem:
         st.warning("Mensagem vazia — digite algo antes de enviar.")
         st.stop()
 
-    st.session_state.mensagens.append(
-        {"role": "user", "content": entrada_usuario}
-    )
-    with st.chat_message("user"):
-        st.markdown(entrada_usuario)
+    adicionar_mensagem("user", nova_mensagem)
+    with st.chat_message("user", avatar=AVATAR_USUARIO):
+        st.markdown(nova_mensagem)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=AVATAR_ASSISTENTE):
         placeholder = st.empty()
         responder(placeholder)
+
+    # Rerun para exibir a nova mensagem pelo mesmo caminho do histórico
+    # (com horário e botão de feedback 👍/👎), igual às mensagens antigas.
+    st.rerun()
